@@ -807,7 +807,6 @@
   meteorSprite = makeMeteorSprite();
 
   now = last = performance.now() / 1000;
-  bornAt = now;
   resize();
   stageStart = now + 0.25;
 
@@ -822,9 +821,9 @@
     }
   }
 
+
   requestAnimationFrame(render);
 
-  // 开场淡入
   setTimeout(function () {
     var fd = document.getElementById('fade');
     if (fd) fd.className = 'fade out';
@@ -835,8 +834,6 @@
     rzTimer = setTimeout(resize, 220);
   });
   window.addEventListener('orientationchange', function () { setTimeout(resize, 320); });
-
-  // 防长按误触：仅短按且位移极小才重播
   var pDnX = 0, pDnY = 0, pDnT = 0;
   window.addEventListener('pointerdown', function (ev) {
     pDnX = ev.clientX; pDnY = ev.clientY; pDnT = now;
@@ -845,7 +842,6 @@
     var mx = ev.clientX - pDnX, my = ev.clientY - pDnY;
     if (mx * mx + my * my < 484 && (now - pDnT) < 0.8) replay();
   }, { passive: true });
-  window.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
   window.addEventListener('keydown', function (ev) {
     if (ev.key === ' ' || ev.key === 'Enter') replay();
   });

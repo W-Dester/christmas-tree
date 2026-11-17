@@ -10,8 +10,19 @@
 <meta property="og:description" content="a little tree of light, just for you" />
 <style>
   html, body { margin: 0; padding: 0; height: 100%; background: #03010a; overflow: hidden; }
-  body { position: fixed; inset: 0; overscroll-behavior: none; -webkit-tap-highlight-color: transparent; }
+  body {
+    position: fixed; inset: 0; overscroll-behavior: none;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none; -moz-user-select: none; user-select: none;
+  }
   #c { display: block; width: 100%; height: 100%; }
+  .fade {
+    position: fixed; inset: 0; pointer-events: none;
+    background: #03010a; opacity: 1;
+    transition: opacity 1.15s ease;
+  }
+  .fade.out { opacity: 0; }
   .vignette {
     position: fixed; inset: 0; pointer-events: none;
     background: radial-gradient(ellipse at 50% 50%, rgba(0,0,0,0) 36%, rgba(0,0,0,.62) 100%);
@@ -28,6 +39,7 @@
 <body>
 <canvas id="c"></canvas>
 <div class="vignette"></div>
+<div class="fade" id="fade"></div>
 <div class="hint" id="hint">TAP TO REPLAY</div>
 <script>
 (function () {
@@ -49,6 +61,17 @@
   ];
   var STAR_RGB = '255,224,140';       // 树尖金星
 
+  /* ---------------- 设备性能分级（决定像素密度与粒子预算） ---------------- */
+  var UA_MOBILE = /Android|iPhone|iPad|iPod|Mobile|MicroMessenger/i.test(navigator.userAgent);
+  var CORES = navigator.hardwareConcurrency || 4;
+  var MEM = navigator.deviceMemory || 4;
+  var PERF = (CORES <= 4 || MEM <= 2) ? 0 : (UA_MOBILE ? 1 : 2); // 0低 1中 2高
+  var DPR_CAP = [1.3, 1.75, 2][PERF];
+  var PART_MAX = [1000, 1400, 4200][PERF];
+  var STAR_MAX = [150, 230, 340][PERF];
+  var DUST_MAX = [22, 34, 46][PERF];
+  var SNOW_MAX = [48, 68, 90][PERF];
+
   var DPR = 1, W = 0, H = 0, cx = 0, cy = 0, focal = 800;
   var sprites = [], starSprite = null;
   var stars = [], dust = [], snow = [], parts = [], starPts = [];
@@ -56,10 +79,12 @@
 
   // 爱心相关
   var hearts3D = [], heartsUp = [], bursts = [], heartImgs = [];
+  var meteors = [], nextMeteorAt = 5.5, meteorSprite = null;
   var HEART_RGB = ['255,92,160', '255,168,214', '255,236,246'];
   var heartOn = location.hash.indexOf('noheart') < 0;
 
   var now = 0, last = 0, rotY = 0, bornAt = 0;
+  var fCount = 0, fAcc = 0, fN = 0, fChecked = false;
   var stageIdx = 0, stageStart = 0;
   var STAGES = [{ type: 'tree', hold: 1e9 }];
   var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -129,7 +154,7 @@
   /* ---------------- 背景 ---------------- */
   function buildStars() {
     stars = [];
-    var n = Math.min(400, Math.round(W * H / 5400));
+    var n = Math.min(STAR_MAX, Math.round(W * H / 5400));
     for (var i = 0; i < n; i++) {
       stars.push({
         x: Math.random() * W,
@@ -145,7 +170,7 @@
 
   function buildDust() {
     dust = [];
-    var n = Math.min(46, Math.round(W * H / 42000));
+    var n = Math.min(DUST_MAX, Math.round(W * H / 42000));
     for (var i = 0; i < n; i++) {
       dust.push({
         x: Math.random() * W,
@@ -162,7 +187,7 @@
 
   function buildSnow() {
     snow = [];
-    var n = Math.min(90, Math.round(W * H / 9000));
+    var n = Math.min(SNOW_MAX, Math.round(W * H / 9000));
     for (var i = 0; i < n; i++) {
       snow.push({
         x: Math.random() * W,
@@ -219,8 +244,7 @@
       }
     }
 
-    var isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
-    var MAX = isMobile ? 2400 : 4200;
+    var MAX = PART_MAX;
     var count = raw.length / 2;
     var kept = [];
     var k;
@@ -251,6 +275,7 @@
         z: (Math.random() - 0.5) * thick
       });
     }
+
     // 按采样点真实范围做安全缩放，保证 3D 旋转 + 发光后不溢出屏幕
     var maxAbsX = 0, maxAbsY = 0;
     for (var q = 0; q < out.length; q++) {
@@ -358,6 +383,36 @@
     bursts = [];
   }
 
+  function makeMeteorSprite() {
+    var MW = 128, MH = 16;
+    var c = document.createElement('canvas');
+    c.width = MW; c.height = MH;
+    var g = c.getContext('2d');
+    var gr = g.createLinearGradient(MW, 0, 0, 0);
+    gr.addColorStop(0.00, 'rgba(255,255,255,0.95)');
+    gr.addColorStop(0.16, 'rgba(255,228,242,0.58)');
+    gr.addColorStop(0.55, 'rgba(255,206,234,0.14)');
+    gr.addColorStop(1.00, 'rgba(255,206,234,0)');
+    g.fillStyle = gr;
+    g.fillRect(0, 0, MW, MH);
+    return c;
+  }
+
+  function spawnMeteor() {
+    var span = Math.max(W, H);
+    var fromLeft = Math.random() < 0.5;
+    meteors.push({
+      x: fromLeft ? -span * 0.10 : W + span * 0.10,
+      y: H * (0.04 + Math.random() * 0.34),
+      vx: (fromLeft ? 1 : -1) * span * (0.46 + Math.random() * 0.22),
+      vy: span * (0.17 + Math.random() * 0.11),
+      len: 0.075 + Math.random() * 0.045,
+      life: 0,
+      max: 1.25 + Math.random() * 0.55,
+      a: 0.45 + Math.random() * 0.35
+    });
+  }
+
   function spawnBurst() {
     if (!heartOn) return;
     var n = 24;
@@ -462,6 +517,19 @@
     var dt = Math.min(0.05, last ? now - last : 0.016);
     last = now;
 
+    // 自适应画质：启动后若持续低于约 42fps，则一次性降低像素密度
+    if (!fChecked) {
+      fCount++;
+      if (fCount > 20) { fAcc += dt; fN++; }
+      if (fCount >= 80) {
+        fChecked = true;
+        if (fN > 0 && (fAcc / fN) > 0.024 && DPR_CAP > 1.35) {
+          DPR_CAP = 1.35;
+          resize();
+        }
+      }
+    }
+
     // 阶段推进
     if (g - stageStart > STAGES[stageIdx].hold) {
       stageIdx = (stageIdx + 1) % STAGES.length;
@@ -514,6 +582,28 @@
       r = d.r * (2.0 + 0.7 * Math.sin(g * 0.8 + d.ph));
       ctx.globalAlpha = d.a * (0.7 + 0.3 * Math.sin(g * 0.6 + d.ph));
       ctx.drawImage(sprites[d.ci], d.x - r, d.y - r, r * 2, r * 2);
+    }
+
+    // ---- 流星 ----
+    if (g > nextMeteorAt) {
+      spawnMeteor();
+      nextMeteorAt = g + 7 + Math.random() * 9;
+    }
+    for (i = meteors.length - 1; i >= 0; i--) {
+      var mt = meteors[i];
+      mt.life += dt;
+      if (mt.life > mt.max) { meteors.splice(i, 1); continue; }
+      mt.x += mt.vx * dt;
+      mt.y += mt.vy * dt;
+      var lf = mt.life / mt.max;
+      var mfade = Math.sin(Math.PI * Math.min(1, lf)) * mt.a;
+      var tlen = Math.max(W, H) * mt.len;
+      ctx.globalAlpha = mfade;
+      ctx.save();
+      ctx.translate(mt.x, mt.y);
+      ctx.rotate(Math.atan2(mt.vy, mt.vx));
+      ctx.drawImage(meteorSprite, -tlen, -3.4, tlen, 6.8);
+      ctx.restore();
     }
 
     // ---- 3D 旋转参数 ----
@@ -668,6 +758,9 @@
       ctx.fillText('W=' + db.W + ' H=' + db.H, 12, 26);
       ctx.fillText('fs=' + db.fs + ' kept=' + db.kept, 12, 50);
       ctx.fillText('maxX=' + db.maxX + ' maxY=' + db.maxY + ' sc=' + db.sc, 12, 74);
+      ctx.fillText('perf=' + PERF + ' dpr=' + DPR.toFixed(2) + ' deg=' + (DPR_CAP > 1.4 ? 0 : 1), 12, 98);
+      ctx.fillText('parts=' + parts.length + ' stars=' + stars.length + ' snow=' + snow.length +
+        ' met=' + meteors.length, 12, 122);
       ctx.globalCompositeOperation = 'lighter';
     }
     requestAnimationFrame(render);
@@ -676,7 +769,7 @@
   /* ---------------- 尺寸 ---------------- */
   var rzTimer = null;
   function resize() {
-    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    DPR = Math.min(window.devicePixelRatio || 1, DPR_CAP);
     W = Math.max(2, window.innerWidth);
     H = Math.max(2, window.innerHeight);
     cx = W / 2;
@@ -711,8 +804,10 @@
   sprites = PALETTE.map(function (c) { return makeSprite(c.rgb); });
   starSprite = makeSprite(STAR_RGB);
   heartImgs = HEART_RGB.map(function (rgb) { return makeHeartSprite(rgb); });
+  meteorSprite = makeMeteorSprite();
 
   now = last = performance.now() / 1000;
+  bornAt = now;
   resize();
   stageStart = now + 0.25;
 
@@ -727,15 +822,30 @@
     }
   }
 
-
   requestAnimationFrame(render);
+
+  // 开场淡入
+  setTimeout(function () {
+    var fd = document.getElementById('fade');
+    if (fd) fd.className = 'fade out';
+  }, 70);
 
   window.addEventListener('resize', function () {
     if (rzTimer) clearTimeout(rzTimer);
     rzTimer = setTimeout(resize, 220);
   });
   window.addEventListener('orientationchange', function () { setTimeout(resize, 320); });
-  window.addEventListener('pointerdown', replay, { passive: true });
+
+  // 防长按误触：仅短按且位移极小才重播
+  var pDnX = 0, pDnY = 0, pDnT = 0;
+  window.addEventListener('pointerdown', function (ev) {
+    pDnX = ev.clientX; pDnY = ev.clientY; pDnT = now;
+  }, { passive: true });
+  window.addEventListener('pointerup', function (ev) {
+    var mx = ev.clientX - pDnX, my = ev.clientY - pDnY;
+    if (mx * mx + my * my < 484 && (now - pDnT) < 0.8) replay();
+  }, { passive: true });
+  window.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
   window.addEventListener('keydown', function (ev) {
     if (ev.key === ' ' || ev.key === 'Enter') replay();
   });
